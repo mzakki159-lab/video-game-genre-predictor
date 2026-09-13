@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 import plotly.express as px
-from pycaret.classification import compare_models, load_model, predict_model, save_model, setup
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
 import streamlit as st
 
 # ==========================================
@@ -14,7 +17,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS Styling
 st.markdown(
     """
     <style>
@@ -67,7 +69,7 @@ st.markdown(
 def load_and_clean_data():
     df = pd.read_csv("vgsales.csv")
 
-    # Handling missing values (Sesuai eksplorasi notebook)
+    # Handling missing values
     df["Year"] = df["Year"].fillna(df["Year"].median())
     df["Publisher"] = df["Publisher"].fillna(df["Publisher"].mode()[0])
 
@@ -97,7 +99,7 @@ try:
     df_raw, df_clean = load_and_clean_data()
 except Exception as e:
     st.error(
-        f"❌ Gagal memuat file `vgsales.csv`. Pastikan file berada di folder yang sama! Detail error: {e}"
+        f"❌ Gagal memuat file `vgsales.csv`. Pastikan file berada di folder yang sama! Detail: {e}"
     )
     st.stop()
 
@@ -115,7 +117,7 @@ with st.sidebar:
         index=0,
     )
     st.divider()
-    st.caption("Powered by PyCaret & Streamlit")
+    st.caption("Powered by Scikit-Learn & Streamlit")
 
 # ==========================================
 # MENU 1: DASHBOARD & ANALYTICS
@@ -181,46 +183,74 @@ elif menu == "Model Training Center":
         """
         <div class="main-header">
             <h1>⚙️ Machine Learning Model Hub</h1>
-            <p>Latih dan bandingkan algoritma terbaik menggunakan PyCaret AutoML</p>
+            <p>Latih model Klasifikasi (Random Forest) secara cepat dan akurat</p>
         </div>
     """,
         unsafe_allow_html=True,
     )
 
     st.info(
-        "💡 **Perbaikan Model:** Fitur `Name` dan `Rank` diabaikan (`ignore_features`), data training dinaikkan menjadi 80% (`train_size=0.8`), serta diaktifkan penyeimbangan kelas (`fix_imbalance=True`) agar hasil prediksi tidak selalu didominasi oleh satu genre tertentu."
+        "💡 Klik tombol di bawah untuk melatih model Random Forest Classifier pada data yang sudah di-clean."
     )
 
     if st.button(
-        "🚀 Mulai Auto-ML Training", type="primary", use_container_width=True
+        "🚀 Mulai Training Model", type="primary", use_container_width=True
     ):
-        with st.spinner(
-            "Sedang melatih dan mengevaluasi model PyCaret... (Membutuhkan waktu 1-2 menit)"
-        ):
-            # SETUP PYCARET TERBARU (BEBAS BIAS)
-            clf_setup = setup(
-                data=df_clean,
-                target="Genre",
-                ignore_features=[
-                    "Name",
-                    "Rank",
-                ],  # Mengabaikan Nama & Rank agar tidak bias/overfit
-                train_size=0.8,  # Menggunakan 80% data untuk training
-                fix_imbalance=True,  # Menyeimbangkan distribusi genre
-                session_id=123,
-                verbose=False,
+        with st.spinner("Sedang memproses data dan melatih model..."):
+            # Prepare features & target
+            X = df_clean[
+                [
+                    "Platform",
+                    "Year",
+                    "Publisher",
+                    "NA_Sales",
+                    "EU_Sales",
+                    "JP_Sales",
+                    "Other_Sales",
+                    "Global_Sales",
+                ]
+            ]
+            y = df_clean["Genre"]
+
+            # One-Hot Encoding for categorical features
+            encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+            cat_cols = ["Platform", "Publisher"]
+            X_encoded = pd.DataFrame(
+                encoder.fit_transform(X[cat_cols]),
+                columns=encoder.get_feature_names_out(cat_cols),
             )
 
-            best_model = compare_models()
-            save_model(best_model, "best_game_genre_model")
+            num_cols = [
+                "Year",
+                "NA_Sales",
+                "EU_Sales",
+                "JP_Sales",
+                "Other_Sales",
+                "Global_Sales",
+            ]
+            X_final = pd.concat([X[num_cols].reset_index(drop=True), X_encoded.reset_index(drop=True)], axis=1)
+
+            # Train Test Split
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_final, y, test_size=0.2, random_state=123
+            )
+
+            # Train Random Forest
+            model = RandomForestClassifier(
+                n_estimators=100, random_state=123, n_jobs=-1
+            )
+            model.fit(X_train, y_train)
+
+            y_pred = model.predict(X_test)
+            acc = accuracy_score(y_test, y_pred)
+
+            # Save objects in session_state
+            st.session_state["rf_model"] = model
+            st.session_state["encoder"] = encoder
+            st.session_state["feature_cols"] = X_final.columns.tolist()
 
         st.balloons()
-        st.success(
-            "🎉 Training Selesai! Model baru yang bervariasi dan akurat berhasil disimpan."
-        )
-
-        st.subheader("🏆 Model Terbaik yang Dipilih:")
-        st.code(str(best_model))
+        st.success(f"🎉 Model Berhasil Dilatih! Akurasi Model: **{acc * 100:.2f}%**")
 
 # ==========================================
 # MENU 3: PREDIKSI INTERAKTIF
@@ -236,28 +266,19 @@ elif menu == "Prediksi Interaktif":
         unsafe_allow_html=True,
     )
 
-    model_loaded = False
-    try:
-        model = load_model("best_game_genre_model")
-        model_loaded = True
-    except:
+    if "rf_model" not in st.session_state:
         st.warning(
-            "⚠️ **Model Belum Ada / Belum Dilatih!** Silakan masuk ke menu **Model Training Center** terlebih dahulu dan klik tombol **Mulai Auto-ML Training**."
+            "⚠️ **Model Belum Dilatih!** Silakan masuk ke menu **Model Training Center** terlebih dahulu dan klik tombol **Mulai Training Model**."
         )
-
-    if model_loaded:
+    else:
         with st.form("prediction_form"):
             st.subheader("📝 Parameter Input Game")
 
             c1, c2 = st.columns(2)
 
             with c1:
-                rank = st.number_input(
-                    "Rank Game (Diabaikan Model)", min_value=1, value=100, step=1
-                )
-                name = st.text_input(
-                    "Nama Game (Diabaikan Model)", value="Call of Duty"
-                )
+                rank = st.number_input("Rank Game", min_value=1, value=100, step=1)
+                name = st.text_input("Nama Game", value="Super Mario Odyssey")
                 platform = st.selectbox(
                     "Platform Konsol",
                     options=sorted(df_raw["Platform"].unique()),
@@ -266,7 +287,7 @@ elif menu == "Prediksi Interaktif":
                     "Tahun Rilis",
                     min_value=1980,
                     max_value=2026,
-                    value=2015,
+                    value=2017,
                 )
                 publisher = st.selectbox(
                     "Publisher", options=sorted(df_raw["Publisher"].unique())
@@ -277,17 +298,17 @@ elif menu == "Prediksi Interaktif":
                 na_sales = st.number_input(
                     "North America Sales (NA)",
                     min_value=0.0,
-                    value=9.5,
+                    value=0.5,
                     step=0.1,
                 )
                 eu_sales = st.number_input(
-                    "Europe Sales (EU)", min_value=0.0, value=5.8, step=0.1
+                    "Europe Sales (EU)", min_value=0.0, value=0.4, step=0.1
                 )
                 jp_sales = st.number_input(
-                    "Japan Sales (JP)", min_value=0.0, value=0.2, step=0.1
+                    "Japan Sales (JP)", min_value=0.0, value=0.3, step=0.1
                 )
                 other_sales = st.number_input(
-                    "Other Region Sales", min_value=0.0, value=1.5, step=0.1
+                    "Other Region Sales", min_value=0.0, value=0.1, step=0.1
                 )
 
                 global_sales = na_sales + eu_sales + jp_sales + other_sales
@@ -302,14 +323,17 @@ elif menu == "Prediksi Interaktif":
             )
 
         if submit_btn:
-            input_data = pd.DataFrame(
+            model = st.session_state["rf_model"]
+            encoder = st.session_state["encoder"]
+            feature_cols = st.session_state["feature_cols"]
+
+            # Prepare single input dataframe
+            input_df = pd.DataFrame(
                 [
                     {
-                        "Rank": rank,
-                        "Name": name,
                         "Platform": platform,
-                        "Year": year,
                         "Publisher": publisher,
+                        "Year": year,
                         "NA_Sales": na_sales,
                         "EU_Sales": eu_sales,
                         "JP_Sales": jp_sales,
@@ -319,13 +343,31 @@ elif menu == "Prediksi Interaktif":
                 ]
             )
 
-            with st.spinner("Menganalisis data..."):
-                prediction = predict_model(model, data=input_data)
+            # Transform input
+            input_cat = pd.DataFrame(
+                encoder.transform(input_df[["Platform", "Publisher"]]),
+                columns=encoder.get_feature_names_out(["Platform", "Publisher"]),
+            )
+            input_num = input_df[
+                [
+                    "Year",
+                    "NA_Sales",
+                    "EU_Sales",
+                    "JP_Sales",
+                    "Other_Sales",
+                    "Global_Sales",
+                ]
+            ]
+            input_final = pd.concat([input_num, input_cat], axis=1)
 
-                if "prediction_label" in prediction.columns:
-                    predicted_genre = prediction["prediction_label"].iloc[0]
-                else:
-                    predicted_genre = prediction["Label"].iloc[0]
+            # Ensure all feature columns match training columns
+            for col in feature_cols:
+                if col not in input_final.columns:
+                    input_final[col] = 0
+            input_final = input_final[feature_cols]
+
+            # Predict
+            predicted_genre = model.predict(input_final)[0]
 
             st.toast("Prediksi Berhasil!", icon="🎯")
 
