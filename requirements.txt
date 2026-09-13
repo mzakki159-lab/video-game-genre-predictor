@@ -2,5 +2,4 @@ streamlit
 pandas
 numpy
 plotly
-pycaret-nightly
-scikit-learn==1.4.2
+scikit-learn
